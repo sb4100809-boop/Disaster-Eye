@@ -771,7 +771,7 @@ const IncidentReportingSystem = () => {
                       {incident.files && incident.files.length > 0 && (
                         <div className="incident-image-section">
                           <img 
-                            src={`/uploads/${incident.files[0]}`}
+                            src={incident.files[0].startsWith('http') ? incident.files[0] : `/uploads/${incident.files[0]}`}
                             alt={`Incident ${incident.id}`}
                             className="incident-image"
                             onError={(e) => {

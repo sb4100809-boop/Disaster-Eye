@@ -18,27 +18,54 @@ app = Flask(__name__, static_folder='../build', static_url_path='/')
 CORS(app)
 
 import sqlite3
+import psycopg2
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
 
-# 🔹 Database Setup (SQLite)
+# 🔹 Database Setup (PostgreSQL or SQLite)
+DATABASE_URL = os.environ.get("DATABASE_URL")
 DB_PATH = "database.db"
 
+def get_db_connection():
+    if DATABASE_URL:
+        return psycopg2.connect(DATABASE_URL)
+    else:
+        return sqlite3.connect(DB_PATH)
+
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS incidents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            full_name TEXT,
-            phone_number TEXT,
-            email TEXT,
-            location TEXT,
-            incident_type TEXT,
-            description TEXT,
-            files TEXT,
-            validation_results TEXT,
-            created_at TEXT
-        )
-    ''')
+    if DATABASE_URL:
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS incidents (
+                id SERIAL PRIMARY KEY,
+                full_name TEXT,
+                phone_number TEXT,
+                email TEXT,
+                location TEXT,
+                incident_type TEXT,
+                description TEXT,
+                files TEXT,
+                validation_results TEXT,
+                created_at TEXT
+            )
+        ''')
+    else:
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS incidents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT,
+                phone_number TEXT,
+                email TEXT,
+                location TEXT,
+                incident_type TEXT,
+                description TEXT,
+                files TEXT,
+                validation_results TEXT,
+                created_at TEXT
+            )
+        ''')
     conn.commit()
     conn.close()
 
@@ -62,6 +89,18 @@ def row_to_dict(row):
 UPLOAD_FOLDER = "uploads"
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# 🔹 Cloudinary Config
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
+
+if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        api_key=CLOUDINARY_API_KEY,
+        api_secret=CLOUDINARY_API_SECRET
+    )
 
 # 🔹 Twilio SMS Config
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
@@ -610,19 +649,34 @@ def create_incident():
                     })
                     print(f"✅ Image validated: {filename}")
                 
-                saved_files.append(filename)
+                if CLOUDINARY_CLOUD_NAME:
+                    print(f"☁️ Uploading {filename} to Cloudinary...")
+                    try:
+                        upload_result = cloudinary.uploader.upload(filepath)
+                        cloudinary_url = upload_result.get('secure_url')
+                        saved_files.append(cloudinary_url)
+                        print(f"✅ Uploaded to Cloudinary: {cloudinary_url}")
+                        os.remove(filepath)
+                    except Exception as e:
+                        print(f"🔴 Cloudinary upload failed, falling back to local: {str(e)}")
+                        saved_files.append(filename)
+                else:
+                    saved_files.append(filename)
                 print(f"🔵 Saved file: {filename}")
 
         # Create incident record with validation results
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
+        placeholders = ', '.join(['%s'] * 9) if DATABASE_URL else ', '.join(['?'] * 9)
+        query = f'''
             INSERT INTO incidents (
                 full_name, phone_number, email, location, incident_type, 
                 description, files, validation_results, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
+            ) VALUES ({placeholders})
+        '''
+        
+        cursor.execute(query, (
             data.get("fullName"),
             data.get("phoneNumber"),
             data.get("email"),
@@ -634,15 +688,21 @@ def create_incident():
             datetime.now().isoformat()
         ))
         
-        report_id = cursor.lastrowid
+        if DATABASE_URL:
+            # For postgres, fetch the last inserted serial id
+            cursor.execute("SELECT currval(pg_get_serial_sequence('incidents','id'));")
+            report_id = cursor.fetchone()[0]
+        else:
+            report_id = cursor.lastrowid
+            
         conn.commit()
         conn.close()
 
         print(f"🔵 Incident saved with ID: {report_id}")
         
         # Send SMS notification
-        phone_number = incident.get("phone_number")
-        incident_type = incident.get("incident_type", "incident")
+        phone_number = data.get("phoneNumber")
+        incident_type = data.get("incidentType", "incident")
         send_sms_notification(phone_number, incident_type, report_id)
 
         return jsonify({
@@ -663,7 +723,7 @@ def create_incident():
 # ------------------------------------------------------
 @app.route("/api/incidents", methods=["GET"])
 def get_incidents():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM incidents ORDER BY id DESC")
     rows = cursor.fetchall()
@@ -677,9 +737,10 @@ def get_incidents():
 # ------------------------------------------------------
 @app.route("/api/incidents/<int:incident_id>", methods=["GET"])
 def get_incident(incident_id):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,))
+    query = f"SELECT * FROM incidents WHERE id = {'%s' if DATABASE_URL else '?'}"
+    cursor.execute(query, (incident_id,))
     row = cursor.fetchone()
     conn.close()
     
