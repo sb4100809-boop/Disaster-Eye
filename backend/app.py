@@ -110,7 +110,8 @@ def row_to_dict(row):
         "description": row[6],
         "files": json.loads(row[7]) if row[7] else [],
         "validation_results": json.loads(row[8]) if row[8] else {},
-        "created_at": row[9]
+        "status": row[9] if len(row) > 10 else "Pending",
+        "created_at": row[10] if len(row) > 10 else row[9]
     }
 
 # 🔹 File upload config

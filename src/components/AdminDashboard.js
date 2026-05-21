@@ -12,7 +12,7 @@ const Icons = {
   Shield: () => <i className="fas fa-shield-alt"></i>
 };
 
-const AdminDashboard = () => {
+const AdminDashboard = ({ showToast = alert }) => {
   const [incidents, setIncidents] = useState([]);
   const [volunteers, setVolunteers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -33,7 +33,7 @@ const AdminDashboard = () => {
       setVolunteers(volunteersData);
     } catch (error) {
       console.error("Failed to fetch admin data", error);
-      alert("Error fetching data from server.");
+      showToast("Error fetching data from server.", 'error');
     } finally {
       setLoading(false);
     }
@@ -53,10 +53,10 @@ const AdminDashboard = () => {
         setIncidents(incidents.filter(inc => inc.id !== id));
       } else {
         const errorData = await res.json();
-        alert(`Failed to delete: ${errorData.error}`);
+        showToast(`Failed to delete: ${errorData.error}`, 'error');
       }
     } catch (err) {
-      alert(`Network error: ${err.message}`);
+      showToast(`Network error: ${err.message}`, 'error');
     }
   };
 
@@ -77,10 +77,10 @@ const AdminDashboard = () => {
         ));
       } else {
         const errorData = await res.json();
-        alert(`Failed to update status: ${errorData.error}`);
+        showToast(`Failed to update status: ${errorData.error}`, 'error');
       }
     } catch (err) {
-      alert(`Network error: ${err.message}`);
+      showToast(`Network error: ${err.message}`, 'error');
     }
   };
 
@@ -93,10 +93,10 @@ const AdminDashboard = () => {
         setVolunteers(volunteers.filter(vol => vol.id !== id));
       } else {
         const errorData = await res.json();
-        alert(`Failed to delete: ${errorData.error}`);
+        showToast(`Failed to delete: ${errorData.error}`, 'error');
       }
     } catch (err) {
-      alert(`Network error: ${err.message}`);
+      showToast(`Network error: ${err.message}`, 'error');
     }
   };
 

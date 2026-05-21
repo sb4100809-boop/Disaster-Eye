@@ -826,9 +826,9 @@ const IncidentReportingSystem = () => {
       <main className="main-content">
         <div className="container">
           {activeTab === 'admin' && isAdmin ? (
-            <AdminDashboard />
+            <AdminDashboard showToast={showToast} />
           ) : activeTab === 'volunteers' ? (
-            <VolunteerBoard />
+            <VolunteerBoard showToast={showToast} />
           ) : activeTab === 'previous' ? (
             /* Previous Incidents Tab */
             <div className="previous-data-container">

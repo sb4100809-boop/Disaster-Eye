@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import '../CSS/IncidentReporting.css';
 import { API_BASE } from '../config';
 
-const VolunteerBoard = () => {
+const VolunteerBoard = ({ showToast = alert }) => {
   const [volunteers, setVolunteers] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -46,13 +46,13 @@ const VolunteerBoard = () => {
         body: JSON.stringify(formData)
       });
       if (response.ok) {
-        alert("Thank you for registering as a volunteer!");
+        showToast("Thank you for registering as a volunteer!", "success");
         setShowForm(false);
         setFormData({ name: '', phone: '', skills: 'Medical', location: '', availability: 'Available Now' });
         fetchVolunteers();
       }
     } catch (error) {
-      alert("Registration failed. Please try again.");
+      showToast("Registration failed. Please try again.", "error");
     }
   };
 
