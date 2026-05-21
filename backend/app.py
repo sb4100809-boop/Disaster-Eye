@@ -7,12 +7,16 @@ import cv2
 import numpy as np
 import requests
 import re
+import random
+import time
 from PIL import Image
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from datetime import datetime
 from twilio.rest import Client
+
+pending_otps = {}
 
 app = Flask(__name__, static_folder='../build', static_url_path='/')
 CORS(app)
@@ -48,6 +52,18 @@ def init_db():
                 description TEXT,
                 files TEXT,
                 validation_results TEXT,
+                status TEXT DEFAULT 'Pending',
+                created_at TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS volunteers (
+                id SERIAL PRIMARY KEY,
+                name TEXT,
+                phone TEXT,
+                skills TEXT,
+                location TEXT,
+                availability TEXT,
                 created_at TEXT
             )
         ''')
@@ -63,6 +79,18 @@ def init_db():
                 description TEXT,
                 files TEXT,
                 validation_results TEXT,
+                status TEXT DEFAULT 'Pending',
+                created_at TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS volunteers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                phone TEXT,
+                skills TEXT,
+                location TEXT,
+                availability TEXT,
                 created_at TEXT
             )
         ''')
@@ -564,6 +592,51 @@ def detect_fake_location_patterns(location_text):
         return False, f"Pattern detection error: {str(e)}"
 
 # ------------------------------------------------------
+# 📌 Route: Send OTP (POST)
+# ------------------------------------------------------
+@app.route("/api/send-otp", methods=["POST"])
+def send_otp():
+    try:
+        data = request.json
+        phone_number = data.get("phoneNumber")
+        
+        if not phone_number:
+            return jsonify({"error": "Phone number is required"}), 400
+            
+        otp = str(random.randint(100000, 999999))
+        
+        # Store OTP with a 5-minute expiry
+        pending_otps[phone_number] = {
+            "otp": otp,
+            "expires_at": time.time() + 300 
+        }
+        
+        # Format the phone number
+        if len(phone_number) == 10 and not phone_number.startswith('+'):
+            formatted_number = f"+91{phone_number}"
+        else:
+            formatted_number = phone_number
+            
+        message_body = f"DisasterEye Verification: Your OTP is {otp}. It expires in 5 minutes. Do not share this code."
+        
+        if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER:
+            client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            message = client.messages.create(
+                body=message_body,
+                from_=TWILIO_PHONE_NUMBER,
+                to=formatted_number
+            )
+            print(f"✅ OTP {otp} sent successfully to {formatted_number}. SID: {message.sid}")
+        else:
+            print(f"✅ MOCK OTP {otp} generated for {formatted_number}")
+            
+        return jsonify({"message": "OTP sent successfully"}), 200
+        
+    except Exception as e:
+        print(f"🔴 Failed to send OTP: {str(e)}")
+        return jsonify({"error": "Failed to send OTP", "details": str(e)}), 500
+
+# ------------------------------------------------------
 # 📌 Route: Submit incident (POST)
 # ------------------------------------------------------
 @app.route("/api/incidents", methods=["POST"])
@@ -571,13 +644,31 @@ def create_incident():
     global incident_counter
     
     try:
-        print("🔵 Received POST request to /api/incidents")
-        print("🔵 Form data:", request.form)
-        print("🔵 Files:", request.files)
         
         data = request.form
         files = request.files.getlist("files")
         location = data.get("location", "")
+        phone_number = data.get("phoneNumber", "")
+        user_otp = data.get("otp", "")
+        
+        # 🔹 Verify OTP
+        if not user_otp:
+            return jsonify({"error": "OTP is required for verification"}), 400
+            
+        otp_record = pending_otps.get(phone_number)
+        if not otp_record:
+            return jsonify({"error": "No OTP requested for this phone number"}), 400
+            
+        if time.time() > otp_record["expires_at"]:
+            del pending_otps[phone_number]
+            return jsonify({"error": "OTP has expired. Please request a new one."}), 400
+            
+        if otp_record["otp"] != user_otp:
+            return jsonify({"error": "Invalid OTP. Please try again."}), 400
+            
+        # OTP is valid! Remove it from pending
+        del pending_otps[phone_number]
+        print(f"✅ OTP verified for {phone_number}")
 
         # 🔹 AI Location Validation
         if location:
@@ -668,11 +759,11 @@ def create_incident():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        placeholders = ', '.join(['%s'] * 9) if DATABASE_URL else ', '.join(['?'] * 9)
+        placeholders = ', '.join(['%s'] * 10) if DATABASE_URL else ', '.join(['?'] * 10)
         query = f'''
             INSERT INTO incidents (
                 full_name, phone_number, email, location, incident_type, 
-                description, files, validation_results, created_at
+                description, files, validation_results, status, created_at
             ) VALUES ({placeholders})
         '''
         
@@ -685,6 +776,7 @@ def create_incident():
             data.get("description"),
             json.dumps(saved_files),
             json.dumps(validation_results),
+            'Pending',
             datetime.now().isoformat()
         ))
         
@@ -757,6 +849,108 @@ def uploaded_file(filename):
     return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
 
 # ------------------------------------------------------
+# 📌 Route: Volunteers (POST & GET)
+# ------------------------------------------------------
+@app.route("/api/volunteers", methods=["POST"])
+def register_volunteer():
+    try:
+        data = request.json
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        placeholders = ', '.join(['%s'] * 6) if DATABASE_URL else ', '.join(['?'] * 6)
+        query = f'''
+            INSERT INTO volunteers (
+                name, phone, skills, location, availability, created_at
+            ) VALUES ({placeholders})
+        '''
+        
+        cursor.execute(query, (
+            data.get("name"),
+            data.get("phone"),
+            data.get("skills"),
+            data.get("location"),
+            data.get("availability"),
+            datetime.now().isoformat()
+        ))
+        
+        conn.commit()
+        conn.close()
+        return jsonify({"message": "Volunteer registered successfully"}), 201
+    except Exception as e:
+        print(f"🔴 Error registering volunteer: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/volunteers", methods=["GET"])
+def get_volunteers():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, phone, skills, location, availability, created_at FROM volunteers ORDER BY id DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        volunteers = []
+        for row in rows:
+            volunteers.append({
+                "id": row[0],
+                "name": row[1],
+                "phone": row[2],
+                "skills": row[3],
+                "location": row[4],
+                "availability": row[5],
+                "created_at": row[6]
+            })
+        return jsonify(volunteers), 200
+    except Exception as e:
+        print(f"🔴 Error fetching volunteers: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+# ------------------------------------------------------
+# 📌 Route: AI Emergency Chat
+# ------------------------------------------------------
+@app.route("/api/chat", methods=["POST"])
+def ai_chat():
+    try:
+        data = request.json
+        user_message = data.get("message", "").lower()
+        
+        # Comprehensive local AI rule-based fallback
+        if "fire" in user_message:
+            response = "🔥 Fire Emergency Steps:\n1. Evacuate immediately.\n2. Stay low to the ground to avoid smoke.\n3. Feel doors with the back of your hand before opening.\n4. Call 101 or local fire services."
+        elif "earthquake" in user_message:
+            response = "🌍 Earthquake Safety:\n1. DROP, COVER, and HOLD ON.\n2. Stay away from windows and heavy furniture.\n3. If outdoors, move to an open area away from buildings and trees.\n4. Expect aftershocks."
+        elif "flood" in user_message or "water" in user_message:
+            response = "🌊 Flood Protocol:\n1. Move to higher ground immediately.\n2. Do NOT walk or drive through floodwaters (6 inches can knock you over).\n3. Turn off electricity at the main breaker."
+        elif "landslide" in user_message or "mudslide" in user_message:
+            response = "⛰️ Landslide Warning:\n1. Move away from the path of the landslide or debris flow immediately.\n2. Listen for unusual sounds like trees cracking or boulders knocking.\n3. If escape is not possible, curl into a tight ball and protect your head."
+        elif "accident" in user_message or "crash" in user_message:
+            response = "🚗 Vehicle Accident:\n1. Ensure your own safety first and move to the side of the road if possible.\n2. Call emergency services (108/112).\n3. Turn on hazard lights.\n4. Do not move injured persons unless there is an immediate threat like fire."
+        elif "medical" in user_message or "hurt" in user_message or "blood" in user_message or "injury" in user_message:
+            response = "🚑 Medical Emergency:\n1. Call an ambulance (108) immediately.\n2. Do not move the person unless they are in immediate danger.\n3. Apply direct pressure to any severe bleeding.\n4. Perform CPR if trained and the person is unresponsive."
+        elif "hurricane" in user_message or "cyclone" in user_message or "storm" in user_message or "tornado" in user_message:
+            response = "🌪️ Severe Storm/Cyclone:\n1. Seek shelter in a sturdy building, away from windows.\n2. Have your emergency kit ready.\n3. Stay indoors until the official all-clear is given."
+        else:
+            response = "I am your AI Emergency Assistant. I can help with general disaster guidance (e.g., Fire, Earthquake, Flood, Landslide, Accident, Storms, or Medical Emergencies). Please briefly describe your situation, and I will give you critical safety steps."
+            
+        return jsonify({"response": response}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ------------------------------------------------------
+# 📌 Route: Live Data Proxy (USGS Earthquakes)
+# ------------------------------------------------------
+@app.route("/api/live-data", methods=["GET"])
+def get_live_data():
+    try:
+        # Fetching M2.5+ Earthquakes past day from USGS
+        url = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson"
+        response = requests.get(url, timeout=10)
+        return jsonify(response.json()), 200
+    except Exception as e:
+        return jsonify({"error": "Failed to fetch live data", "details": str(e)}), 500
+
+# ------------------------------------------------------
 # 📌 Route: Serve React App
 # ------------------------------------------------------
 @app.route('/', defaults={'path': ''})
@@ -766,6 +960,76 @@ def serve(path):
         return send_from_directory(app.static_folder, path)
     else:
         return send_from_directory(app.static_folder, 'index.html')
+
+# ------------------------------------------------------
+# 📌 Admin Route: Delete Incident
+# ------------------------------------------------------
+@app.route("/api/incidents/<int:incident_id>", methods=["DELETE"])
+def delete_incident(incident_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if DATABASE_URL:
+            cursor.execute("DELETE FROM incidents WHERE id = %s", (incident_id,))
+        else:
+            cursor.execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
+            
+        conn.commit()
+        conn.close()
+        return jsonify({"message": f"Incident {incident_id} deleted successfully"}), 200
+    except Exception as e:
+        print(f"🔴 Error in delete_incident: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+# ------------------------------------------------------
+# 📌 Admin Route: Update Incident Status
+# ------------------------------------------------------
+@app.route("/api/incidents/<int:incident_id>/status", methods=["PUT"])
+def update_incident_status(incident_id):
+    try:
+        data = request.json
+        new_status = data.get("status")
+        
+        if not new_status:
+            return jsonify({"error": "Status is required"}), 400
+            
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if DATABASE_URL:
+            cursor.execute("UPDATE incidents SET status = %s WHERE id = %s", (new_status, incident_id))
+        else:
+            cursor.execute("UPDATE incidents SET status = ? WHERE id = ?", (new_status, incident_id))
+            
+        conn.commit()
+        conn.close()
+        return jsonify({"message": f"Incident {incident_id} status updated to {new_status}"}), 200
+    except Exception as e:
+        print(f"🔴 Error in update_incident_status: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+# ------------------------------------------------------
+# 📌 Admin Route: Delete Volunteer
+# ------------------------------------------------------
+@app.route("/api/volunteers/<int:volunteer_id>", methods=["DELETE"])
+def delete_volunteer(volunteer_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if DATABASE_URL:
+            cursor.execute("DELETE FROM volunteers WHERE id = %s", (volunteer_id,))
+        else:
+            cursor.execute("DELETE FROM volunteers WHERE id = ?", (volunteer_id,))
+            
+        conn.commit()
+        conn.close()
+        return jsonify({"message": f"Volunteer {volunteer_id} deleted successfully"}), 200
+    except Exception as e:
+        print(f"🔴 Error in delete_volunteer: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 # ------------------------------------------------------
 # 📌 Run Flask
 # ------------------------------------------------------

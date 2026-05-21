@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import '../CSS/IncidentReporting.css';
-import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, useMapEvents, CircleMarker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
+import VolunteerBoard from './VolunteerBoard';
+import AIAssistant from './AIAssistant';
+import AdminDashboard from './AdminDashboard';
+import { API_BASE } from '../config';
 
 // Fix Leaflet's default icon path issues with Webpack
 delete L.Icon.Default.prototype._getIconUrl;
@@ -68,6 +72,40 @@ const IncidentReportingSystem = () => {
   const [mapPosition, setMapPosition] = useState([20.5937, 78.9629]); // Default to India center
   const [mapAddress, setMapAddress] = useState('');
   const [isFetchingAddress, setIsFetchingAddress] = useState(false);
+  const [liveData, setLiveData] = useState([]);
+
+  // OTP state
+  const [showOtpModal, setShowOtpModal] = useState(false);
+  const [otpInput, setOtpInput] = useState('');
+  const [isSendingOtp, setIsSendingOtp] = useState(false);
+
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
+
+  const [toast, setToast] = useState({ show: false, message: '', type: 'error' });
+
+  const showToast = (message, type = 'error') => {
+    setToast({ show: true, message, type });
+    setTimeout(() => setToast(prev => ({ ...prev, show: false })), 5000);
+  };
+
+  useEffect(() => {
+    const fetchLiveData = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/live-data`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.features) {
+            setLiveData(data.features);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch live data:", err);
+      }
+    };
+    fetchLiveData();
+  }, []);
 
   const LocationMarker = () => {
     const map = useMapEvents({
@@ -201,6 +239,14 @@ const IncidentReportingSystem = () => {
       newErrors.incidentType = 'Please select an incident type';
     }
 
+    if (!formData.location.trim()) {
+      newErrors.location = 'Location is required';
+    }
+
+    if (!formData.description.trim()) {
+      newErrors.description = 'Incident description is required';
+    }
+
     if (formData.email && !isValidEmail(formData.email)) {
       newErrors.email = 'Please enter a valid email address';
     }
@@ -325,7 +371,7 @@ const IncidentReportingSystem = () => {
             if (damagePixels > 0) details.push(`Damage pixels: ${((damagePixels/totalPixels)*100).toFixed(1)}%`);
             if (emergencyPixels > 0) details.push(`Emergency colors: ${((emergencyPixels/totalPixels)*100).toFixed(1)}%`);
             
-            alert(`🚫 Image "${file.name}" does not appear to show a disaster scene.\n\n` +
+            showToast(`🚫 Image "${file.name}" does not appear to show a disaster scene.\n\n` +
                   `Current disaster relevance: ${disasterPercentage.toFixed(1)}% (Required: 25%)\n\n` +
                   `Please upload photos that clearly show:\n` +
                   `• 🔥 Active fires, flames, or burning\n` +
@@ -334,7 +380,7 @@ const IncidentReportingSystem = () => {
                   `• 🚨 Emergency vehicles or responders\n` +
                   `• 🌊 Flooding or water damage\n` +
                   `• ⚠️ Clear safety hazards or incidents\n\n` +
-                  `This image appears to be: ${details.length > 0 ? details.join(', ') : 'general/non-disaster content'}`);
+                  `This image appears to be: ${details.length > 0 ? details.join(', ') : 'general/non-disaster content'}`, 'error');
           } else {
             console.log(`✅ Image "${file.name}" validated as disaster-related: ${disasterPercentage.toFixed(1)}%`);
           }
@@ -343,7 +389,7 @@ const IncidentReportingSystem = () => {
         };
         
         img.onerror = () => {
-          alert(`Error analyzing image "${file.name}". Please try again.`);
+          showToast(`Error analyzing image "${file.name}". Please try again.`, 'error');
           resolve(false);
         };
         
@@ -360,12 +406,12 @@ const IncidentReportingSystem = () => {
     const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'video/mp4', 'video/mov'];
     
     if (file.size > maxSize) {
-      alert(`File "${file.name}" is too large. Maximum size is 50MB.`);
+      showToast(`File "${file.name}" is too large. Maximum size is 50MB.`, 'error');
       return false;
     }
     
     if (!allowedTypes.includes(file.type)) {
-      alert(`File type "${file.type}" is not supported.`);
+      showToast(`File type "${file.type}" is not supported.`, 'error');
       return false;
     }
     
@@ -411,11 +457,12 @@ const IncidentReportingSystem = () => {
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       handleFileUpload(e.dataTransfer.files);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Send incident data to backend API
-  const submitIncidentToAPI = async (formData, uploadedFiles) => {
-    const API_URL = '/api/incidents';
+  const submitIncidentToAPI = async (formData, uploadedFiles, otp) => {
+    const API_URL = `${API_BASE}/incidents`;
     
     try {
       console.log('Submitting data:', { formData, uploadedFiles });
@@ -430,6 +477,7 @@ const IncidentReportingSystem = () => {
       submitData.append('location', formData.location || '');
       submitData.append('incidentType', formData.incidentType);
       submitData.append('description', formData.description || '');
+      submitData.append('otp', otp || '');
       
       // Add uploaded files
       uploadedFiles.forEach((fileObj, index) => {
@@ -475,7 +523,7 @@ const IncidentReportingSystem = () => {
 
   // Fetch all incidents from backend API
   const fetchIncidentsFromAPI = async () => {
-    const API_URL = '/api/incidents';
+    const API_URL = `${API_BASE}/incidents`;
     
     try {
       const response = await fetch(API_URL, {
@@ -498,28 +546,6 @@ const IncidentReportingSystem = () => {
   };
 
   // Fetch single incident by ID from backend API
-  const fetchIncidentById = async (incidentId) => {
-    const API_URL = `/api/incidents/${incidentId}`;
-    
-    try {
-      const response = await fetch(API_URL, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const incident = await response.json();
-      return incident;
-    } catch (error) {
-      console.error('Error fetching incident:', error);
-      throw error;
-    }
-  };
 
   // State for incidents list
   const [incidents, setIncidents] = useState([]);
@@ -536,7 +562,7 @@ const IncidentReportingSystem = () => {
       console.log('Loaded incidents:', incidentsData);
     } catch (error) {
       console.error('Failed to load incidents:', error);
-      alert('Failed to load incidents. Please try again.');
+      showToast('Failed to load incidents. Please try again.', 'error');
     } finally {
       setLoadingIncidents(false);
     }
@@ -545,39 +571,50 @@ const IncidentReportingSystem = () => {
   // Load incidents when component mounts
   useEffect(() => {
     loadIncidents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Test API connection
-  const testAPIConnection = async () => {
-    try {
-      const response = await fetch('/api/incidents'); // Health check or root API check
-      const data = await response.json();
-      console.log('✅ API Connection Test:', data);
-      alert('✅ Backend API is connected and running!');
-    } catch (error) {
-      console.error('❌ API Connection Test Failed:', error);
-      alert('❌ Backend API is not responding. Please check if the server is running.');
-    }
-  };
 
   // Handle form submission
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
     if (!validateForm()) return;
 
-    setIsSubmitting(true);
-    
+    setIsSendingOtp(true);
     try {
-      console.log('Starting form submission...');
-      console.log('Form data:', formData);
-      console.log('Uploaded files:', uploadedFiles);
+      const response = await fetch(`${API_BASE}/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phoneNumber: formData.phoneNumber })
+      });
       
-      // Send data to backend API
-      const result = await submitIncidentToAPI(formData, uploadedFiles);
+      if (response.ok) {
+        setShowOtpModal(true);
+      } else {
+        const err = await response.json();
+        showToast(`Failed to send OTP: ${err.error || 'Unknown error'}`, 'error');
+      }
+    } catch (error) {
+      showToast(`Network error: ${error.message}`, 'error');
+    } finally {
+      setIsSendingOtp(false);
+    }
+  };
+
+  const verifyAndSubmit = async () => {
+    if (!otpInput || otpInput.length !== 6) {
+      showToast("Please enter a valid 6-digit OTP.", 'error');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      // Send data to backend API with OTP
+      const result = await submitIncidentToAPI(formData, uploadedFiles, otpInput);
       
       // Use the report ID from backend
       setReportId(result.reportId.toString());
+      setShowOtpModal(false);
+      setOtpInput('');
       setShowSuccessModal(true);
       
       // Show validation results
@@ -588,12 +625,23 @@ const IncidentReportingSystem = () => {
       // Refresh the incidents list to show the new submission
       await loadIncidents();
       
-      console.log('Incident submitted successfully:', result);
     } catch (error) {
       console.error('Error submitting report:', error);
-      alert(`Error submitting report: ${error.message}`);
+      showToast(`Error submitting report: ${error.message}`, 'error');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleAdminLogin = (e) => {
+    e.preventDefault();
+    if (adminPassword === 'admin123') {
+      setIsAdmin(true);
+      setShowAdminLogin(false);
+      setActiveTab('admin');
+      setAdminPassword('');
+    } else {
+      showToast("Incorrect password!", 'error');
     }
   };
 
@@ -630,21 +678,38 @@ const IncidentReportingSystem = () => {
   const getCurrentLocation = () => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (position) => {
+        async (position) => {
           const { latitude, longitude } = position.coords;
-          setFormData(prev => ({
-            ...prev,
-            location: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
-          }));
-          alert('Location captured successfully!');
+          
+          try {
+            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=18&addressdetails=1`);
+            const data = await response.json();
+            
+            const address = (data && data.display_name) 
+              ? data.display_name 
+              : `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+              
+            setFormData(prev => ({
+              ...prev,
+              location: address
+            }));
+            showToast('Location captured successfully!', 'success');
+          } catch (error) {
+            console.error("Geocoding error:", error);
+            setFormData(prev => ({
+              ...prev,
+              location: `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`
+            }));
+            showToast('Location coordinates captured (address lookup failed).', 'info');
+          }
         },
         (error) => {
           console.error('Error getting location:', error);
-          alert('Unable to get your location. Please enter it manually.');
+          showToast('Unable to get your location. Please enter it manually.', 'error');
         }
       );
     } else {
-      alert('Geolocation is not supported by this browser.');
+      showToast('Geolocation is not supported by this browser.', 'error');
     }
   };
 
@@ -665,6 +730,18 @@ const IncidentReportingSystem = () => {
 
   return (
     <div className="incident-reporting-system">
+      {/* Toast Notification */}
+      {toast.show && (
+        <div className="toast-container">
+          <div className={`toast ${toast.type}`}>
+            {toast.type === 'error' ? <Icons.AlertTriangle /> : toast.type === 'success' ? <Icons.CheckCircle /> : <Icons.AlertTriangle />}
+            <span className="toast-message">{toast.message}</span>
+            <button className="toast-close" onClick={() => setToast(prev => ({ ...prev, show: false }))}>&times;</button>
+          </div>
+        </div>
+      )}
+
+      <AIAssistant />
       {/* Header */}
       <header className="main-header">
         <div className="header-container">
@@ -705,6 +782,31 @@ const IncidentReportingSystem = () => {
               <Icons.Images />
               Previous Incidents
             </button>
+            <button 
+              className={`tab-button ${activeTab === 'volunteers' ? 'active' : ''}`}
+              onClick={() => setActiveTab('volunteers')}
+            >
+              <Icons.UserNurse />
+              Volunteers
+            </button>
+            {!isAdmin ? (
+              <button 
+                className={`tab-button`}
+                onClick={() => setShowAdminLogin(true)}
+              >
+                <Icons.Lock />
+                Admin
+              </button>
+            ) : (
+              <button 
+                className={`tab-button ${activeTab === 'admin' ? 'active' : ''}`}
+                onClick={() => setActiveTab('admin')}
+                style={{ background: activeTab === 'admin' ? '#ff4d4f' : 'transparent', color: activeTab === 'admin' ? 'white' : 'inherit' }}
+              >
+                <Icons.Shield />
+                Admin Panel
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -723,7 +825,11 @@ const IncidentReportingSystem = () => {
       {/* Main Content */}
       <main className="main-content">
         <div className="container">
-          {activeTab === 'previous' ? (
+          {activeTab === 'admin' && isAdmin ? (
+            <AdminDashboard />
+          ) : activeTab === 'volunteers' ? (
+            <VolunteerBoard />
+          ) : activeTab === 'previous' ? (
             /* Previous Incidents Tab */
             <div className="previous-data-container">
               <div className="previous-data-header">
@@ -856,7 +962,7 @@ const IncidentReportingSystem = () => {
                   </div>
                   
                   <div className="form-group">
-                    <label htmlFor="location">Specific Location</label>
+                    <label htmlFor="location">Specific Location *</label>
                     <input
                       type="text"
                       id="location"
@@ -864,7 +970,10 @@ const IncidentReportingSystem = () => {
                       value={formData.location}
                       onChange={handleInputChange}
                       placeholder="Building name, floor, room number, or address"
+                      className={errors.location ? 'error' : ''}
+                      required
                     />
+                    {errors.location && <span className="validation-error">{errors.location}</span>}
                     <small className="help-text">Be as specific as possible - it helps our response team</small>
                   </div>
                   
@@ -911,7 +1020,7 @@ const IncidentReportingSystem = () => {
                 <div className="form-card">
                   <div className="card-header">
                     <Icons.Comment />
-                    <h3>Incident Description</h3>
+                    <h3>Incident Description *</h3>
                   </div>
                   
                   <div className="form-group">
@@ -922,7 +1031,10 @@ const IncidentReportingSystem = () => {
                       onChange={handleInputChange}
                       rows="5"
                       placeholder="Please describe what you saw, heard, or experienced. When did it happen? Who was involved? What made you concerned?"
+                      className={errors.description ? 'error' : ''}
+                      required
                     />
+                    {errors.description && <span className="validation-error">{errors.description}</span>}
                     <small className="help-text">Take your time - the more details you provide, the better we can help</small>
                     <div className="character-count">
                       <span>{formData.description.length.toLocaleString()}</span> characters
@@ -1023,19 +1135,21 @@ const IncidentReportingSystem = () => {
                     </div>
                   )}
                   
-                  <button type="submit" className="submit-button" disabled={isSubmitting}>
-                    {isSubmitting ? (
-                      <div className="loading-spinner">
-                        <Icons.Spinner />
-                        Sending...
-                      </div>
-                    ) : (
-                      <span className="btn-content">
-                        <Icons.PaperPlane />
-                        Submit My Report
-                      </span>
-                    )}
-                  </button>
+                  <div className="form-actions">
+                    <button type="submit" className="submit-button" disabled={isSubmitting || isSendingOtp}>
+                      {(isSubmitting || isSendingOtp) ? (
+                        <>
+                          <Icons.Spinner />
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <Icons.PaperPlane />
+                          Submit Report
+                        </>
+                      )}
+                    </button>
+                  </div>
                   
                   <p className="submit-help">You'll receive a confirmation with your report ID within moments</p>
                 </div>
@@ -1176,6 +1290,42 @@ const IncidentReportingSystem = () => {
         </div>
       </main>
 
+      {/* OTP Modal */}
+      {showOtpModal && (
+        <div className="modal show">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h2><Icons.Shield /> Verify Your Phone</h2>
+              <button onClick={() => setShowOtpModal(false)} className="close-btn">×</button>
+            </div>
+            <div className="modal-body" style={{ textAlign: 'center', padding: '2rem 1rem' }}>
+              <p>We've sent a 6-digit code to <strong>{formData.phoneNumber}</strong>.</p>
+              <div className="form-group" style={{ margin: '2rem 0' }}>
+                <input
+                  type="text"
+                  maxLength="6"
+                  placeholder="Enter 6-digit OTP"
+                  value={otpInput}
+                  onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
+                  style={{ fontSize: '2rem', textAlign: 'center', letterSpacing: '5px' }}
+                />
+              </div>
+              <button 
+                onClick={verifyAndSubmit} 
+                className="submit-button"
+                disabled={isSubmitting || otpInput.length !== 6}
+              >
+                {isSubmitting ? (
+                  <><Icons.Spinner /> Verifying...</>
+                ) : (
+                  <><Icons.CheckCircle /> Confirm & Submit Report</>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Success Modal */}
       {showSuccessModal && (
         <div className="modal show">
@@ -1205,6 +1355,33 @@ const IncidentReportingSystem = () => {
         </div>
       )}
 
+      {/* Admin Login Modal */}
+      {showAdminLogin && (
+        <div className="modal show">
+          <div className="modal-content" style={{ maxWidth: '400px' }}>
+            <div className="modal-header">
+              <h2><Icons.Lock /> Admin Access</h2>
+              <button onClick={() => setShowAdminLogin(false)} className="close-btn">×</button>
+            </div>
+            <form onSubmit={handleAdminLogin} className="modal-body" style={{ padding: '2rem' }}>
+              <div className="form-group">
+                <label>Master Password</label>
+                <input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  placeholder="Enter password"
+                  autoFocus
+                />
+              </div>
+              <button type="submit" className="submit-button" style={{ marginTop: '1rem' }}>
+                Login
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Map Modal */}
       {showMap && (
         <div className="modal show map-modal">
@@ -1221,6 +1398,26 @@ const IncidentReportingSystem = () => {
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 />
                 <LocationMarker />
+                
+                {/* Live Earthquake Data Markers */}
+                {liveData.map((quake, idx) => (
+                  <CircleMarker
+                    key={`quake-${idx}`}
+                    center={[quake.geometry.coordinates[1], quake.geometry.coordinates[0]]}
+                    radius={Math.max(quake.properties.mag * 2, 5)}
+                    fillColor="#e74c3c"
+                    color="#c0392b"
+                    weight={1}
+                    opacity={0.8}
+                    fillOpacity={0.5}
+                  >
+                    <Popup>
+                      <strong>{quake.properties.title}</strong><br/>
+                      Magnitude: {quake.properties.mag}<br/>
+                      Time: {new Date(quake.properties.time).toLocaleString()}
+                    </Popup>
+                  </CircleMarker>
+                ))}
               </MapContainer>
             </div>
             <div className="map-footer" style={{ marginTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
