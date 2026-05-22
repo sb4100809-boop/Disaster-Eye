@@ -214,7 +214,13 @@ const IncidentReportingSystem = () => {
 
   // Format phone number for 10-digit format
   const formatPhoneNumber = (value) => {
-    const numbers = value.replace(/\D/g, '');
+    let numbers = value.replace(/\D/g, '');
+    // Strip leading country code or zero if present and total length is > 10
+    if (numbers.startsWith('91') && numbers.length > 10) {
+      numbers = numbers.substring(2);
+    } else if (numbers.startsWith('0') && numbers.length > 10) {
+      numbers = numbers.substring(1);
+    }
     // Limit to 10 digits and format as XXXXXXXXXX
     return numbers.substring(0, 10);
   };
@@ -591,7 +597,7 @@ const IncidentReportingSystem = () => {
         setShowOtpModal(true);
       } else {
         const err = await response.json();
-        showToast(`Failed to send OTP: ${err.error || 'Unknown error'}`, 'error');
+        showToast(`Failed to send OTP: ${err.details || err.error || 'Unknown error'}`, 'error');
       }
     } catch (error) {
       showToast(`Network error: ${error.message}`, 'error');
