@@ -605,6 +605,8 @@ def send_otp():
             return jsonify({"error": "Phone number is required"}), 400
             
         otp = str(random.randint(100000, 999999))
+        if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER):
+            otp = "123456" # Fixed OTP for testing without Twilio
         
         # Store OTP with a 5-minute expiry
         pending_otps[phone_number] = {
@@ -652,24 +654,10 @@ def create_incident():
         phone_number = data.get("phoneNumber", "")
         user_otp = data.get("otp", "")
         
-        # 🔹 Verify OTP
-        if not user_otp:
-            return jsonify({"error": "OTP is required for verification"}), 400
-            
-        otp_record = pending_otps.get(phone_number)
-        if not otp_record:
-            return jsonify({"error": "No OTP requested for this phone number"}), 400
-            
-        if time.time() > otp_record["expires_at"]:
-            del pending_otps[phone_number]
-            return jsonify({"error": "OTP has expired. Please request a new one."}), 400
-            
-        if otp_record["otp"] != user_otp:
-            return jsonify({"error": "Invalid OTP. Please try again."}), 400
-            
-        # OTP is valid! Remove it from pending
-        del pending_otps[phone_number]
-        print(f"✅ OTP verified for {phone_number}")
+        user_otp = data.get("otp", "")
+        
+        # OTP verification has been removed as requested
+        print(f"✅ OTP verification bypassed for {phone_number}")
 
         # 🔹 AI Location Validation
         if location:

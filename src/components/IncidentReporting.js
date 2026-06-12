@@ -75,9 +75,7 @@ const IncidentReportingSystem = () => {
   const [liveData, setLiveData] = useState([]);
 
   // OTP state
-  const [showOtpModal, setShowOtpModal] = useState(false);
-  const [otpInput, setOtpInput] = useState('');
-  const [isSendingOtp, setIsSendingOtp] = useState(false);
+  const [showOtpModal, setShowOtpModal] = useState(false); // Kept for minimal diff or remove if preferred
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [showAdminLogin, setShowAdminLogin] = useState(false);
@@ -580,47 +578,17 @@ const IncidentReportingSystem = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Handle form submission
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!validateForm()) return;
 
-    setIsSendingOtp(true);
-    try {
-      const response = await fetch(`${API_BASE}/send-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phoneNumber: formData.phoneNumber })
-      });
-      
-      if (response.ok) {
-        setShowOtpModal(true);
-      } else {
-        const err = await response.json();
-        showToast(`Failed to send OTP: ${err.details || err.error || 'Unknown error'}`, 'error');
-      }
-    } catch (error) {
-      showToast(`Network error: ${error.message}`, 'error');
-    } finally {
-      setIsSendingOtp(false);
-    }
-  };
-
-  const verifyAndSubmit = async () => {
-    if (!otpInput || otpInput.length !== 6) {
-      showToast("Please enter a valid 6-digit OTP.", 'error');
-      return;
-    }
-
     setIsSubmitting(true);
     try {
-      // Send data to backend API with OTP
-      const result = await submitIncidentToAPI(formData, uploadedFiles, otpInput);
+      // Send data to backend API directly without OTP
+      const result = await submitIncidentToAPI(formData, uploadedFiles, "123456");
       
       // Use the report ID from backend
       setReportId(result.reportId.toString());
-      setShowOtpModal(false);
-      setOtpInput('');
       setShowSuccessModal(true);
       
       // Show validation results
@@ -1142,8 +1110,8 @@ const IncidentReportingSystem = () => {
                   )}
                   
                   <div className="form-actions">
-                    <button type="submit" className="submit-button" disabled={isSubmitting || isSendingOtp}>
-                      {(isSubmitting || isSendingOtp) ? (
+                    <button type="submit" className="submit-button" disabled={isSubmitting}>
+                      {isSubmitting ? (
                         <>
                           <Icons.Spinner />
                           Processing...
@@ -1296,41 +1264,7 @@ const IncidentReportingSystem = () => {
         </div>
       </main>
 
-      {/* OTP Modal */}
-      {showOtpModal && (
-        <div className="modal show">
-          <div className="modal-content">
-            <div className="modal-header">
-              <h2><Icons.Shield /> Verify Your Phone</h2>
-              <button onClick={() => setShowOtpModal(false)} className="close-btn">×</button>
-            </div>
-            <div className="modal-body" style={{ textAlign: 'center', padding: '2rem 1rem' }}>
-              <p>We've sent a 6-digit code to <strong>{formData.phoneNumber}</strong>.</p>
-              <div className="form-group" style={{ margin: '2rem 0' }}>
-                <input
-                  type="text"
-                  maxLength="6"
-                  placeholder="Enter 6-digit OTP"
-                  value={otpInput}
-                  onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, ''))}
-                  style={{ fontSize: '2rem', textAlign: 'center', letterSpacing: '5px' }}
-                />
-              </div>
-              <button 
-                onClick={verifyAndSubmit} 
-                className="submit-button"
-                disabled={isSubmitting || otpInput.length !== 6}
-              >
-                {isSubmitting ? (
-                  <><Icons.Spinner /> Verifying...</>
-                ) : (
-                  <><Icons.CheckCircle /> Confirm & Submit Report</>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* OTP Modal removed */}
 
       {/* Success Modal */}
       {showSuccessModal && (
