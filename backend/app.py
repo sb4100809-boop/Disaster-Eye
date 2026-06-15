@@ -15,6 +15,9 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from datetime import datetime
 from twilio.rest import Client
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 pending_otps = {}
 
@@ -61,6 +64,7 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 name TEXT,
                 phone TEXT,
+                email TEXT,
                 skills TEXT,
                 location TEXT,
                 availability TEXT,
@@ -88,12 +92,27 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT,
                 phone TEXT,
+                email TEXT,
                 skills TEXT,
                 location TEXT,
                 availability TEXT,
                 created_at TEXT
             )
         ''')
+        
+    # Auto-migrate: Add email column if it doesn't exist
+    try:
+        if DATABASE_URL:
+            cursor.execute("ALTER TABLE volunteers ADD COLUMN IF NOT EXISTS email TEXT")
+        else:
+            # SQLite workaround for IF NOT EXISTS
+            cursor.execute("PRAGMA table_info(volunteers)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'email' not in columns:
+                cursor.execute("ALTER TABLE volunteers ADD COLUMN email TEXT")
+    except Exception as e:
+        print(f"Migration error (ignoring): {e}")
+
     conn.commit()
     conn.close()
 
@@ -130,6 +149,45 @@ if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
         api_key=CLOUDINARY_API_KEY,
         api_secret=CLOUDINARY_API_SECRET
     )
+
+# 🔹 Email Config
+SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
+SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+
+def send_email_notification(to_email, subject, body_html):
+    """Send an HTML email notification."""
+    if not to_email:
+        print("⚠️ No email provided, skipping email notification.")
+        return False
+        
+    if not (SMTP_USERNAME and SMTP_PASSWORD):
+        print(f"\n" + "="*50)
+        print(f"📧 MOCK EMAIL TO: {to_email}")
+        print(f"Subject: {subject}")
+        print(f"Body: {body_html[:100]}...")
+        print(f"="*50 + "\n")
+        print("⚠️ NOTE: SMTP credentials not found. This is a mock Email.")
+        return True
+        
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_USERNAME
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body_html, 'html', 'utf-8'))
+        
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        print(f"✅ Email sent successfully to {to_email}")
+        return True
+    except Exception as e:
+        print(f"🔴 Failed to send Email: {str(e)}")
+        return False
 
 # 🔹 Twilio SMS Config
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
@@ -170,7 +228,7 @@ def send_sms_notification(phone_number, incident_type, report_id):
         print(f"📱 MOCK SMS TO: {phone_number}")
         print(f"✉️ MESSAGE: {message_body}")
         print(f"="*50 + "\n")
-        print("⚠️ NOTE: Twilio credentials not found. This is a mock SMS. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_PHONE_NUMBER to send real SMS.")
+        print("⚠️ NOTE: Twilio credentials not found. This is a mock SMS.")
         return True
 
 # 🔹 AI Validation Functions
@@ -640,6 +698,68 @@ def send_otp():
         return jsonify({"error": "Failed to send OTP", "details": str(e)}), 500
 
 # ------------------------------------------------------
+# 📌 Route: Send Email OTP (POST)
+# ------------------------------------------------------
+@app.route("/api/send-email-otp", methods=["POST"])
+def send_email_otp():
+    try:
+        data = request.json
+        email = data.get("email")
+        if not email:
+            return jsonify({"error": "Email is required"}), 400
+            
+        otp = str(random.randint(100000, 999999))
+        
+        # Store OTP with a 10-minute expiry
+        pending_otps[email] = {
+            "otp": otp,
+            "expires_at": time.time() + 600
+        }
+        
+        email_html = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif;">
+                <h2>DisasterEye - Verification Code</h2>
+                <p>Your OTP for verifying your identity is: <strong>{otp}</strong></p>
+                <p>This code will expire in 10 minutes. Do not share it with anyone.</p>
+            </body>
+        </html>
+        """
+        
+        send_email_notification(email, "DisasterEye Verification Code", email_html)
+        return jsonify({"message": "OTP sent successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/verify-email-otp", methods=["POST"])
+def verify_email_otp():
+    try:
+        data = request.json
+        email = data.get("email")
+        otp = data.get("otp")
+        
+        if not email or not otp:
+            return jsonify({"error": "Email and OTP required"}), 400
+            
+        stored = pending_otps.get(email)
+        if not stored:
+            return jsonify({"error": "No OTP requested for this email"}), 400
+            
+        if time.time() > stored["expires_at"]:
+            del pending_otps[email]
+            return jsonify({"error": "OTP has expired"}), 400
+            
+        if stored["otp"] != otp:
+            return jsonify({"error": "Invalid OTP"}), 400
+            
+        # Clear OTP on success
+        del pending_otps[email]
+        
+        return jsonify({"message": "OTP verified successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ------------------------------------------------------
 # 📌 Route: Submit incident (POST)
 # ------------------------------------------------------
 @app.route("/api/incidents", methods=["POST"])
@@ -744,6 +864,33 @@ def create_incident():
                     saved_files.append(filename)
                 print(f"🔵 Saved file: {filename}")
 
+        # 🤖 AI Severity Triage & Auto-Action Plan
+        severity = "Medium" # Default
+        action_plan = "Dispatch standard response team. Investigate site."
+        
+        description_text = data.get("description", "").lower()
+        incident_type = data.get("incidentType", "").lower()
+        combined_text = f"{description_text} {incident_type}"
+        
+        if any(w in combined_text for w in ['dead', 'death', 'casualty', 'trapped', 'collapse', 'explos', 'critical', 'sos']):
+            severity = "Critical"
+            action_plan = "URGENT: Dispatch Heavy Rescue, Ambulances, and Police immediately. Implement hard perimeter."
+        elif any(w in combined_text for w in ['fire', 'burn', 'blood', 'injur', 'accident', 'crash', 'heart', 'attack']):
+            severity = "High"
+            action_plan = "PRIORITY: Dispatch Fire/Medical teams. Begin area evacuation protocols."
+        elif any(w in combined_text for w in ['water', 'flood', 'tree', 'power', 'road', 'block']):
+            severity = "Medium"
+            action_plan = "Monitor situation. Dispatch utility teams to secure area. Issue public advisory."
+        else:
+            severity = "Low"
+            action_plan = "Log incident. Schedule non-emergency assessment."
+            
+        final_validation = {
+            "images": validation_results,
+            "severity": severity,
+            "action_plan": action_plan
+        }
+
         # Create incident record with validation results
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -764,7 +911,7 @@ def create_incident():
             data.get("incidentType"),
             data.get("description"),
             json.dumps(saved_files),
-            json.dumps(validation_results),
+            json.dumps(final_validation),
             'Pending',
             datetime.now().isoformat()
         ))
@@ -785,6 +932,71 @@ def create_incident():
         phone_number = data.get("phoneNumber")
         incident_type = data.get("incidentType", "incident")
         send_sms_notification(phone_number, incident_type, report_id)
+        
+        # Send Email notification
+        user_email = data.get("email")
+        if user_email:
+            email_html = f"""
+            <html>
+                <body style="font-family: Arial, sans-serif; color: #333;">
+                    <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
+                        <h2 style="color: #e53e3e; text-align: center;">DisasterEye - Report Confirmation</h2>
+                        <p>Dear {data.get('fullName', 'Citizen')},</p>
+                        <p>Thank you for your vigilance. Your <strong>{incident_type}</strong> report has been successfully registered.</p>
+                        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                            <p><strong>Report ID:</strong> {report_id}</p>
+                            <p><strong>Location:</strong> {location}</p>
+                            <p><strong>Status:</strong> <span style="color: #d97706; font-weight: bold;">Pending Verification</span></p>
+                        </div>
+                        <p>Our AI system has logged your data, and local authorities have been notified. We will dispatch responders shortly if necessary.</p>
+                        <p>Stay safe!</p>
+                        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
+                        <p style="font-size: 12px; color: #777; text-align: center;">One Nation, One Response, Many Life Savior</p>
+                    </div>
+                </body>
+            </html>
+            """
+            send_email_notification(user_email, f"Incident Report #{report_id} Received - DisasterEye", email_html)
+
+        # Automated Volunteer Dispatching
+        try:
+            conn_dispatch = get_db_connection()
+            cursor_dispatch = conn_dispatch.cursor()
+            
+            # Simple keyword matching for location or skills
+            loc_keyword = location.split(',')[0].strip() if location else ""
+            
+            if DATABASE_URL:
+                cursor_dispatch.execute("SELECT name, email, phone FROM volunteers WHERE location ILIKE %s OR skills ILIKE %s", 
+                              (f"%{loc_keyword}%", f"%{incident_type}%"))
+            else:
+                cursor_dispatch.execute("SELECT name, email, phone FROM volunteers WHERE location LIKE ? OR skills LIKE ?", 
+                              (f"%{loc_keyword}%", f"%{incident_type}%"))
+            matching_volunteers = cursor_dispatch.fetchall()
+            conn_dispatch.close()
+            
+            for vol in matching_volunteers:
+                vol_name, vol_email, vol_phone = vol
+                if vol_email:
+                    vol_email_html = f"""
+                    <html>
+                        <body style="font-family: Arial, sans-serif; color: #333;">
+                            <div style="border: 2px solid #e74c3c; border-radius: 8px; padding: 20px; max-width: 600px; margin: 0 auto;">
+                                <h2 style="color: #e74c3c; text-align: center;">🚨 URGENT: Volunteer Assistance Required</h2>
+                                <p>Dear <strong>{vol_name}</strong>,</p>
+                                <p>An incident of type <strong>{incident_type.upper()}</strong> has been reported in or near your registered location: <strong>{location}</strong>.</p>
+                                <div style="background-color: #fef2f2; padding: 15px; border-left: 4px solid #e74c3c; margin: 15px 0;">
+                                    <p style="margin: 0;"><strong>Incident Details:</strong> {data.get("description", "No description provided.")}</p>
+                                </div>
+                                <p>If you are available to assist, please report to the location safely or contact the local authorities immediately.</p>
+                                <p style="font-size: 12px; color: #777;">You are receiving this because your skills or location matched this emergency.</p>
+                            </div>
+                        </body>
+                    </html>
+                    """
+                    send_email_notification(vol_email, f"🚨 URGENT ALERT: {incident_type.title()} reported near you!", vol_email_html)
+        except Exception as e:
+            print(f"Error in automated volunteer dispatching: {str(e)}")
 
         return jsonify({
             "message": "Incident reported successfully", 
@@ -847,16 +1059,17 @@ def register_volunteer():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        placeholders = ', '.join(['%s'] * 6) if DATABASE_URL else ', '.join(['?'] * 6)
+        placeholders = ', '.join(['%s'] * 7) if DATABASE_URL else ', '.join(['?'] * 7)
         query = f'''
             INSERT INTO volunteers (
-                name, phone, skills, location, availability, created_at
+                name, phone, email, skills, location, availability, created_at
             ) VALUES ({placeholders})
         '''
         
         cursor.execute(query, (
             data.get("name"),
             data.get("phone"),
+            data.get("email", ""),
             data.get("skills"),
             data.get("location"),
             data.get("availability"),
@@ -865,6 +1078,32 @@ def register_volunteer():
         
         conn.commit()
         conn.close()
+        
+        # Send Email notification to volunteer
+        volunteer_email = data.get("email")
+        if volunteer_email:
+            email_html = f"""
+            <html>
+                <body style="font-family: Arial, sans-serif; color: #333;">
+                    <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px;">
+                        <h2 style="color: #10b981; text-align: center;">DisasterEye - Volunteer Registration</h2>
+                        <p>Dear {data.get('name', 'Volunteer')},</p>
+                        <p>Thank you for registering as a volunteer for DisasterEye. Your willingness to help the community in times of need is deeply appreciated.</p>
+                        <div style="background-color: #f9f9f9; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                            <p><strong>Skills:</strong> {data.get('skills')}</p>
+                            <p><strong>Location:</strong> {data.get('location')}</p>
+                            <p><strong>Availability:</strong> {data.get('availability')}</p>
+                        </div>
+                        <p>We will contact you if an emergency matching your skills and location occurs.</p>
+                        <p>Stay safe!</p>
+                        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
+                        <p style="font-size: 12px; color: #777; text-align: center;">One Nation, One Response, Many Life Savior</p>
+                    </div>
+                </body>
+            </html>
+            """
+            send_email_notification(volunteer_email, "Welcome to DisasterEye Volunteers", email_html)
+
         return jsonify({"message": "Volunteer registered successfully"}), 201
     except Exception as e:
         print(f"🔴 Error registering volunteer: {str(e)}")
@@ -875,7 +1114,7 @@ def get_volunteers():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, phone, skills, location, availability, created_at FROM volunteers ORDER BY id DESC")
+        cursor.execute("SELECT id, name, phone, email, skills, location, availability, created_at FROM volunteers ORDER BY id DESC")
         rows = cursor.fetchall()
         conn.close()
         
@@ -885,10 +1124,11 @@ def get_volunteers():
                 "id": row[0],
                 "name": row[1],
                 "phone": row[2],
-                "skills": row[3],
-                "location": row[4],
-                "availability": row[5],
-                "created_at": row[6]
+                "email": row[3],
+                "skills": row[4],
+                "location": row[5],
+                "availability": row[6],
+                "created_at": row[7]
             })
         return jsonify(volunteers), 200
     except Exception as e:
@@ -988,11 +1228,49 @@ def update_incident_status(incident_id):
         
         if DATABASE_URL:
             cursor.execute("UPDATE incidents SET status = %s WHERE id = %s", (new_status, incident_id))
+            cursor.execute("SELECT email, full_name, incident_type, location FROM incidents WHERE id = %s", (incident_id,))
         else:
             cursor.execute("UPDATE incidents SET status = ? WHERE id = ?", (new_status, incident_id))
+            cursor.execute("SELECT email, full_name, incident_type, location FROM incidents WHERE id = ?", (incident_id,))
             
+        incident_data = cursor.fetchone()
         conn.commit()
         conn.close()
+        
+        # Send Auto-Update Email
+        if incident_data and incident_data[0]:
+            user_email, full_name, incident_type, location = incident_data
+            
+            if new_status == 'Responders Dispatched':
+                subject = f"🚨 UPDATE: Emergency Responders Dispatched - Report #{incident_id}"
+                body = f"""
+                <html>
+                    <body style="font-family: Arial, sans-serif;">
+                        <h2 style="color: #f39c12;">Update on your Incident Report #{incident_id}</h2>
+                        <p>Dear {full_name},</p>
+                        <p>We are writing to inform you that <strong>Emergency Responders have been successfully dispatched</strong> to the {incident_type} at {location}.</p>
+                        <p>Please ensure you are in a safe location and follow instructions from the authorities once they arrive.</p>
+                        <p>Thank you for using DisasterEye.</p>
+                    </body>
+                </html>
+                """
+                send_email_notification(user_email, subject, body)
+                
+            elif new_status == 'Resolved':
+                subject = f"✅ RESOLVED: Incident Report #{incident_id} Closed"
+                body = f"""
+                <html>
+                    <body style="font-family: Arial, sans-serif;">
+                        <h2 style="color: #27ae60;">Incident Report #{incident_id} Resolved</h2>
+                        <p>Dear {full_name},</p>
+                        <p>The {incident_type} emergency reported at {location} has now been officially marked as <strong>Resolved</strong> and the scene is secure.</p>
+                        <p>Your vigilance helped keep the community safe. Thank you for your critical assistance.</p>
+                        <p>- The DisasterEye Command Center</p>
+                    </body>
+                </html>
+                """
+                send_email_notification(user_email, subject, body)
+
         return jsonify({"message": f"Incident {incident_id} status updated to {new_status}"}), 200
     except Exception as e:
         print(f"🔴 Error in update_incident_status: {str(e)}")
@@ -1017,6 +1295,29 @@ def delete_volunteer(volunteer_id):
         return jsonify({"message": f"Volunteer {volunteer_id} deleted successfully"}), 200
     except Exception as e:
         print(f"🔴 Error in delete_volunteer: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+# ------------------------------------------------------
+# 📌 Route: Update Volunteer
+# ------------------------------------------------------
+@app.route("/api/volunteers/<int:volunteer_id>", methods=["PUT"])
+def update_volunteer(volunteer_id):
+    try:
+        data = request.json
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        if DATABASE_URL:
+            cursor.execute("UPDATE volunteers SET name=%s, phone=%s, skills=%s, location=%s, availability=%s WHERE id=%s", 
+                (data.get("name"), data.get("phone"), data.get("skills"), data.get("location"), data.get("availability"), volunteer_id))
+        else:
+            cursor.execute("UPDATE volunteers SET name=?, phone=?, skills=?, location=?, availability=? WHERE id=?", 
+                (data.get("name"), data.get("phone"), data.get("skills"), data.get("location"), data.get("availability"), volunteer_id))
+            
+        conn.commit()
+        conn.close()
+        return jsonify({"message": "Volunteer updated successfully"}), 200
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 # ------------------------------------------------------

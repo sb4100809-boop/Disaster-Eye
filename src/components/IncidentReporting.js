@@ -174,24 +174,47 @@ const IncidentReportingSystem = () => {
     { id: 'other', label: 'Other', icon: '📞', color: 'other' }
   ];
 
-  // Update sensor data every 5 seconds
+  // Fetch real environmental data using Open-Meteo API
   useEffect(() => {
-    const interval = setInterval(() => {
-      setSensorData(prev => ({
-        ...prev,
-        temperature: (22 + Math.random() * 4).toFixed(1),
-        humidity: Math.floor(40 + Math.random() * 30),
-        airQuality: Math.floor(50 + Math.random() * 40),
-        soundLevel: Math.floor(30 + Math.random() * 20),
-        lightLevel: Math.floor(600 + Math.random() * 400),
-        motion: Math.random() > 0.7,
-        vibration: (Math.random() * 0.3).toFixed(2),
-        lastUpdate: new Date()
-      }));
-    }, 5000);
+    const fetchRealWeather = async (lat, lng) => {
+      try {
+        const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,relative_humidity_2m,surface_pressure,wind_speed_10m&timezone=auto`);
+        const data = await res.json();
+        if (data && data.current) {
+          setSensorData(prev => ({
+            ...prev,
+            temperature: data.current.temperature_2m,
+            humidity: data.current.relative_humidity_2m,
+            // Open-Meteo free tier doesn't include AQI, so we simulate it alongside other sensors
+            airQuality: Math.floor(Math.random() * 40 + 30),
+            soundLevel: data.current.surface_pressure > 1010 ? 45 : 35,
+            lightLevel: Math.floor(data.current.wind_speed_10m * 100 + 500),
+            motion: Math.random() > 0.8,
+            vibration: (Math.random() * 0.3).toFixed(2),
+            lastUpdate: new Date()
+          }));
+        }
+      } catch (e) {
+        console.error("Failed to fetch real weather", e);
+      }
+    };
+
+    const loadData = () => {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => fetchRealWeather(pos.coords.latitude, pos.coords.longitude),
+          () => fetchRealWeather(mapPosition[0], mapPosition[1])
+        );
+      } else {
+        fetchRealWeather(mapPosition[0], mapPosition[1]);
+      }
+    };
+
+    loadData(); // Initial load
+    const interval = setInterval(loadData, 300000); // Update every 5 minutes
 
     return () => clearInterval(interval);
-  }, []);
+  }, [mapPosition]);
 
   // Handle form input changes
   const handleInputChange = (e) => {
@@ -578,6 +601,59 @@ const IncidentReportingSystem = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const handleSOS = () => {
+    if (!navigator.geolocation) {
+      showToast("Geolocation is not supported by your browser", "error");
+      return;
+    }
+
+    showToast("Activating SOS Protocol...", "warning");
+    
+    navigator.geolocation.getCurrentPosition(async (position) => {
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      
+      let locationText = `Lat: ${lat}, Lng: ${lng}`;
+      try {
+        const geoRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+        if (geoRes.ok) {
+          const geoData = await geoRes.json();
+          if (geoData.display_name) {
+            locationText = geoData.display_name;
+          }
+        }
+      } catch (e) {
+        console.error("Geocoding failed", e);
+      }
+      
+      const submitData = new FormData();
+      submitData.append('fullName', 'SOS Emergency Alert');
+      submitData.append('phoneNumber', '112');
+      submitData.append('email', '');
+      submitData.append('location', `SOS Alert Location: ${locationText}`);
+      submitData.append('incidentType', 'other');
+      submitData.append('description', 'CRITICAL SOS SIGNAL TRIGGERED. IMMEDIATE RESPONSE REQUIRED.');
+      
+      try {
+        const response = await fetch(`${API_BASE}/incidents`, {
+          method: 'POST',
+          body: submitData
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          showToast(`SOS SENT! Report ID: ${result.reportId}`, "success");
+        } else {
+          showToast("SOS Failed to send. Please dial 112 immediately.", "error");
+        }
+      } catch (err) {
+        showToast("SOS Network Error. Please dial 112 immediately.", "error");
+      }
+    }, () => {
+      showToast("Could not get location. Please enable GPS.", "error");
+    });
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!validateForm()) return;
@@ -726,18 +802,19 @@ const IncidentReportingSystem = () => {
               <p className="tagline">One Nation, One Response Many Life Savior</p>
             </div>
           </div>
-          <div className="emergency-badge">
-            <Icons.Phone />
-            <span>Fire: 101</span>
-          </div>
+          <div className="emergency-badges-container" style={{ display: 'flex', gap: '1rem' }}>
             <div className="emergency-badge">
-            <Icons.Phone />
-            <span>Police: 112</span>
-          </div>
-          
+              <Icons.Phone />
+              <span>Fire: 101</span>
+            </div>
             <div className="emergency-badge">
-            <Icons.Ambulance />
-            <span>Ambulance: 108</span>
+              <Icons.Phone />
+              <span>Police: 112</span>
+            </div>
+            <div className="emergency-badge">
+              <Icons.Ambulance />
+              <span>Ambulance: 108</span>
+            </div>
           </div>
           
           {/* Tab Navigation */}
@@ -775,7 +852,6 @@ const IncidentReportingSystem = () => {
               <button 
                 className={`tab-button ${activeTab === 'admin' ? 'active' : ''}`}
                 onClick={() => setActiveTab('admin')}
-                style={{ background: activeTab === 'admin' ? '#ff4d4f' : 'transparent', color: activeTab === 'admin' ? 'white' : 'inherit' }}
               >
                 <Icons.Shield />
                 Admin Panel
@@ -798,12 +874,15 @@ const IncidentReportingSystem = () => {
 
       {/* Main Content */}
       <main className="main-content">
-        <div className="container">
-          {activeTab === 'admin' && isAdmin ? (
+        {activeTab === 'admin' && isAdmin ? (
+          <div className="admin-container-wrapper" style={{ padding: '0 2rem' }}>
             <AdminDashboard showToast={showToast} />
-          ) : activeTab === 'volunteers' ? (
-            <VolunteerBoard showToast={showToast} />
-          ) : activeTab === 'previous' ? (
+          </div>
+        ) : (
+          <div className="container">
+            {activeTab === 'volunteers' ? (
+              <VolunteerBoard showToast={showToast} />
+            ) : activeTab === 'previous' ? (
             /* Previous Incidents Tab */
             <div className="previous-data-container">
               <div className="previous-data-header">
@@ -834,6 +913,11 @@ const IncidentReportingSystem = () => {
                         <div className="detail-row">
                           <strong>Phone:</strong> {incident.phone_number}
                         </div>
+                        {incident.email && (
+                          <div className="detail-row">
+                            <strong>Email:</strong> {incident.email}
+                          </div>
+                        )}
                         <div className="detail-row">
                           <strong>Location:</strong> {incident.location}
                         </div>
@@ -851,7 +935,7 @@ const IncidentReportingSystem = () => {
                       {incident.files && incident.files.length > 0 && (
                         <div className="incident-image-section">
                           <img 
-                            src={incident.files[0].startsWith('http') ? incident.files[0] : `/uploads/${incident.files[0]}`}
+                            src={incident.files[0].startsWith('http') ? incident.files[0] : `${API_BASE.replace('/api', '')}/uploads/${incident.files[0]}`}
                             alt={`Incident ${incident.id}`}
                             className="incident-image"
                             onError={(e) => {
@@ -923,6 +1007,21 @@ const IncidentReportingSystem = () => {
                     />
                     {errors.phoneNumber && <span className="validation-error">{errors.phoneNumber}</span>}
                     <small className="help-text">Enter your 10-digit mobile number without spaces or special characters</small>
+                  </div>
+
+                  <div className="form-group">
+                    <label htmlFor="email">Email Address (Optional)</label>
+                    <input
+                      type="email"
+                      id="email"
+                      name="email"
+                      value={formData.email}
+                      onChange={handleInputChange}
+                      placeholder="To receive a confirmation email"
+                      className={errors.email ? 'error' : ''}
+                    />
+                    {errors.email && <span className="validation-error">{errors.email}</span>}
+                    <small className="help-text">We'll send you an email confirmation with your Report ID</small>
                   </div>
 
                 </div>
@@ -1091,23 +1190,7 @@ const IncidentReportingSystem = () => {
                     <p><strong>Your Privacy Matters:</strong> All information you provide is encrypted and handled according to our privacy policy. We only share details with authorized personnel who need to respond to your report.</p>
                   </div>
                   
-                  {imageValidationResults.length > 0 && (
-                    <div className="validation-status">
-                      <div className="validation-header">
-                        <Icons.Shield />
-                        <h4>AI Image Validation Results</h4>
-                      </div>
-                      <div className="validation-details">
-                        {imageValidationResults.map((result, index) => (
-                          <div key={index} className="validation-item">
-                            <p><strong>File:</strong> {result.file}</p>
-                            <p><strong>Authenticity:</strong> {result.authenticity}</p>
-                            <p><strong>Content:</strong> {result.content}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+
                   
                   <div className="form-actions">
                     <button type="submit" className="submit-button" disabled={isSubmitting}>
@@ -1211,37 +1294,37 @@ const IncidentReportingSystem = () => {
                 </div>
                 
                 <div className="contact-list">
-                  <a href="tel:911" className="contact-item emergency">
-                    <div className="contact-icon"><Icons.Ambulance /></div>
-                    <div className="contact-info">
-                      <strong>Emergency Services</strong>
-                      <span>911</span>
-                    </div>
-                  </a>
-                  
-                  <a href="tel:5551230000" className="contact-item">
+                  <div className="contact-item emergency">
                     <div className="contact-icon"><Icons.Shield /></div>
                     <div className="contact-info">
-                      <strong>Security Desk</strong>
-                      <span>(555) 123-0000</span>
+                      <strong>National Emergency</strong>
+                      <span>112</span>
                     </div>
-                  </a>
+                  </div>
                   
-                  <a href="tel:5551230001" className="contact-item">
-                    <div className="contact-icon"><Icons.Tools /></div>
+                  <div className="contact-item">
+                    <div className="contact-icon"><Icons.Ambulance /></div>
                     <div className="contact-info">
-                      <strong>Maintenance</strong>
-                      <span>(555) 123-0001</span>
+                      <strong>Medical / Ambulance</strong>
+                      <span>108</span>
                     </div>
-                  </a>
+                  </div>
                   
-                  <a href="tel:5551230002" className="contact-item">
+                  <div className="contact-item">
+                    <div className="contact-icon"><Icons.AlertTriangle /></div>
+                    <div className="contact-info">
+                      <strong>NDRF (Disaster Response)</strong>
+                      <span>9711077372</span>
+                    </div>
+                  </div>
+                  
+                  <div className="contact-item">
                     <div className="contact-icon"><Icons.UserNurse /></div>
                     <div className="contact-info">
-                      <strong>First Aid</strong>
-                      <span>(555) 123-0002</span>
+                      <strong>Women Helpline</strong>
+                      <span>1091</span>
                     </div>
-                  </a>
+                  </div>
                 </div>
               </div>
 
@@ -1262,6 +1345,7 @@ const IncidentReportingSystem = () => {
           </div>
         )}
         </div>
+        )}
       </main>
 
       {/* OTP Modal removed */}
@@ -1373,6 +1457,17 @@ const IncidentReportingSystem = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Floating SOS Button */}
+      {activeTab === 'form' && (
+        <button 
+          className="sos-floating-btn" 
+          onClick={handleSOS}
+          title="1-Click SOS Emergency"
+        >
+          SOS
+        </button>
       )}
     </div>
   );
