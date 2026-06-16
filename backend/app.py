@@ -178,15 +178,17 @@ def send_email_notification(to_email, subject, body_html):
         msg['Subject'] = subject
         msg.attach(MIMEText(body_html, 'html', 'utf-8'))
         
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        print(f"⏳ Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT}...", flush=True)
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
+        server.set_debuglevel(1)  # Enable debug output
         server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
         server.send_message(msg)
         server.quit()
-        print(f"✅ Email sent successfully to {to_email}")
+        print(f"✅ Email sent successfully to {to_email}", flush=True)
         return True
     except Exception as e:
-        print(f"🔴 Failed to send Email: {str(e)}")
+        print(f"🔴 Failed to send Email: {str(e)}", flush=True)
         return False
 
 # 🔹 Twilio SMS Config
