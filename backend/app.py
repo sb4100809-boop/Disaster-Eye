@@ -156,8 +156,17 @@ except (ValueError, TypeError):
 SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 
+import threading
+
 def send_email_notification(to_email, subject, body_html):
-    """Send an HTML email notification."""
+    """Run email sending in a background thread to avoid blocking Gunicorn."""
+    thread = threading.Thread(target=_send_email_sync, args=(to_email, subject, body_html))
+    thread.daemon = True
+    thread.start()
+    return True
+
+def _send_email_sync(to_email, subject, body_html):
+    """Actual synchronous email sending logic."""
     if not to_email:
         print("⚠️ No email provided, skipping email notification.")
         return False
@@ -178,7 +187,11 @@ def send_email_notification(to_email, subject, body_html):
         msg['Subject'] = subject
         msg.attach(MIMEText(body_html, 'html', 'utf-8'))
         
-        print(f"⏳ Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT}...", flush=True)
+        print(f"⏳ Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT} (in background)...", flush=True)
+        # Use a short timeout so the background thread doesn't hang forever
+        import socket
+        socket.setdefaulttimeout(10)
+        
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
         server.set_debuglevel(1)  # Enable debug output
         server.starttls()
