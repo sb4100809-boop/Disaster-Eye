@@ -118,20 +118,17 @@ def init_db():
 
 init_db()
 
-def row_to_dict(row):
-    return {
-        "id": row[0],
-        "full_name": row[1],
-        "phone_number": row[2],
-        "email": row[3],
-        "location": row[4],
-        "incident_type": row[5],
-        "description": row[6],
-        "files": json.loads(row[7]) if row[7] else [],
-        "validation_results": json.loads(row[8]) if row[8] else {},
-        "status": row[9] if len(row) > 10 else "Pending",
-        "created_at": row[10] if len(row) > 10 else row[9]
-    }
+def row_to_dict(cursor, row):
+    if not row: return None
+    columns = [desc[0] for desc in cursor.description]
+    d = dict(zip(columns, row))
+    if isinstance(d.get("files"), str):
+        try: d["files"] = json.loads(d["files"])
+        except: d["files"] = []
+    if isinstance(d.get("validation_results"), str):
+        try: d["validation_results"] = json.loads(d["validation_results"])
+        except: d["validation_results"] = {}
+    return d
 
 # 🔹 File upload config
 UPLOAD_FOLDER = "uploads"
@@ -1020,9 +1017,8 @@ def get_incidents():
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM incidents ORDER BY id DESC")
     rows = cursor.fetchall()
+    incidents = [row_to_dict(cursor, row) for row in rows]
     conn.close()
-    
-    incidents = [row_to_dict(row) for row in rows]
     return jsonify(incidents)
 
 # ------------------------------------------------------
