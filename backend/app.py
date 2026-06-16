@@ -182,6 +182,22 @@ def _send_email_sync(to_email, subject, body_html):
         print("⚠️ NOTE: RESEND_API_KEY not found. This is a mock Email.")
         return True
         
+    # 🔹 WORKAROUND FOR RESEND FREE TIER: 
+    # Resend only allows sending to the verified email on free accounts. 
+    # We will intercept emails going to other users and redirect them to the owner.
+    verified_owner_email = "sb4100809@gmail.com"
+    original_to_email = to_email
+    
+    if to_email.lower() != verified_owner_email.lower():
+        print(f"🔄 Redirecting email intended for {to_email} to verified owner {verified_owner_email}...")
+        warning_banner = f"""
+        <div style="background-color: #fff3cd; color: #856404; padding: 15px; border: 1px solid #ffeeba; border-radius: 5px; margin-bottom: 20px; font-family: Arial, sans-serif;">
+            <strong>⚠️ TEST MODE REDIRECT:</strong> This email was automatically redirected by the system. It was originally intended to be sent to <strong>{to_email}</strong>.
+        </div>
+        """
+        body_html = warning_banner + body_html
+        to_email = verified_owner_email
+        
     try:
         print(f"⏳ Sending email to {to_email} via Resend API...", flush=True)
         headers = {
@@ -198,7 +214,7 @@ def _send_email_sync(to_email, subject, body_html):
         response = requests.post("https://api.resend.com/emails", headers=headers, json=data, timeout=10)
         
         if response.status_code in [200, 201]:
-            print(f"✅ Email sent successfully to {to_email}", flush=True)
+            print(f"✅ Email sent successfully to {to_email} (Original target: {original_to_email})", flush=True)
             return True
         else:
             print(f"🔴 Failed to send Email: {response.status_code} - {response.text}", flush=True)
