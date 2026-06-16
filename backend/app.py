@@ -166,42 +166,45 @@ def send_email_notification(to_email, subject, body_html):
     return True
 
 def _send_email_sync(to_email, subject, body_html):
-    """Actual synchronous email sending logic."""
+    """Actual synchronous email sending logic using Resend API to bypass Render firewall."""
     if not to_email:
         print("⚠️ No email provided, skipping email notification.")
         return False
         
-    if not (SMTP_USERNAME and SMTP_PASSWORD):
+    RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+    
+    if not RESEND_API_KEY:
         print(f"\n" + "="*50)
         print(f"📧 MOCK EMAIL TO: {to_email}")
         print(f"Subject: {subject}")
         print(f"Body: {body_html[:100]}...")
         print(f"="*50 + "\n")
-        print("⚠️ NOTE: SMTP credentials not found. This is a mock Email.")
+        print("⚠️ NOTE: RESEND_API_KEY not found. This is a mock Email.")
         return True
         
     try:
-        msg = MIMEMultipart()
-        msg['From'] = SMTP_USERNAME
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body_html, 'html', 'utf-8'))
+        print(f"⏳ Sending email to {to_email} via Resend API...", flush=True)
+        headers = {
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "from": "DisasterEye <onboarding@resend.dev>",
+            "to": [to_email],
+            "subject": subject,
+            "html": body_html
+        }
         
-        print(f"⏳ Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT} (in background)...", flush=True)
-        # Use a short timeout so the background thread doesn't hang forever
-        import socket
-        socket.setdefaulttimeout(10)
+        response = requests.post("https://api.resend.com/emails", headers=headers, json=data, timeout=10)
         
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
-        server.set_debuglevel(1)  # Enable debug output
-        server.starttls()
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
-        server.quit()
-        print(f"✅ Email sent successfully to {to_email}", flush=True)
-        return True
+        if response.status_code in [200, 201]:
+            print(f"✅ Email sent successfully to {to_email}", flush=True)
+            return True
+        else:
+            print(f"🔴 Failed to send Email: {response.status_code} - {response.text}", flush=True)
+            return False
     except Exception as e:
-        print(f"🔴 Failed to send Email: {str(e)}", flush=True)
+        print(f"🔴 Exception sending Email via Resend: {str(e)}", flush=True)
         return False
 
 # 🔹 Twilio SMS Config
